@@ -1,0 +1,85 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  verificar-index:
+    name: Verificar index.html
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: index.html existe na raiz
+        run: |
+          if [ ! -f index.html ]; then
+            echo "ERRO: index.html não encontrado na raiz."
+            exit 1
+          fi
+
+  validacoes:
+    name: Validações
+    needs: verificar-index
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Bloquear arquivos maiores que 500KB
+        run: |
+          grandes=$(find . -type f -size +500k -not -path "./.git/*" -not -path "./node_modules/*")
+          if [ -n "$grandes" ]; then
+            echo "ERRO: arquivos acima de 500KB:"
+            echo "$grandes"
+            exit 1
+          fi
+
+      - name: Bloquear TODO, FIXME, senha e password
+        run: |
+          if grep -rniE "TODO|FIXME|senha|password" . \
+            --include="*.html" --include="*.css" --include="*.js" \
+            --exclude-dir=.git --exclude-dir=node_modules --exclude-dir=.github; then
+            echo "ERRO: termos proibidos encontrados."
+            exit 1
+          fi
+
+      - name: Validar links e imagens
+        run: |
+          fail=0
+          for f in $(find . -name "*.html" -not -path "./node_modules/*"); do
+            dir=$(dirname "$f")
+            for url in $(grep -oE '(href|src)="[^"]*"' "$f" | sed -E 's/^(href|src)="//; s/"$//'); do
+              case "$url" in
+                "") echo "URL vazia em $f"; fail=1 ;;
+                \#*|mailto:*|tel:*) ;;
+                http://*|https://*)
+                  code=$(curl -s -o /dev/null -w "%{http_code}" -L --max-time 20 -A "Mozilla/5.0" "$url" || true)
+                  if [ "$code" = "999" ]; then continue; fi
+                  if [ "$code" = "000" ] || [ "$code" -ge 400 ]; then
+                    echo "URL inválida: $url (HTTP $code)"; fail=1
+                  fi ;;
+                *)
+                  path="${url%%[?#]*}"
+                  if [ ! -e "$dir/$path" ]; then
+                    echo "Caminho inválido: $url em $f"; fail=1
+                  fi ;;
+              esac
+            done
+          done
+          exit $fail
+
+  linter:
+    name: Linter (Node ${{ matrix.node-version }})
+    needs: verificar-index
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node-version: [18, 20]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+      - name: Instalar dependências
+        run: npm install
+      - name: Executar HTMLHint
+        run: npm run lint
